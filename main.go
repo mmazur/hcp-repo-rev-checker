@@ -34,7 +34,7 @@ extracts ARO_HCP_REPO_REVISION values from ./hcp/Revision.mk and outputs them as
 
 func init() {
 	rootCmd.Flags().BoolVarP(&quickMode, "quick", "q", false, "Skip git fetch/reset operations and use repository as-is")
-	rootCmd.Flags().StringVarP(&envList, "env", "e", "", "Comma-separated list of environments to analyze (int,stg,prod). If not specified, all environments are processed.")
+	rootCmd.Flags().StringVarP(&envList, "envs", "e", "", "Comma-separated list of environments to analyze (int,stg,prod). If not specified, all environments are processed.")
 	rootCmd.Flags().IntVarP(&days, "days", "d", 0, "Number of days to look back in commit history for Revision.mk changes. If 0, only checks the tip commit.")
 }
 

@@ -20,6 +20,7 @@ type CommitInfo struct {
 var (
 	quickMode bool
 	envList   string
+	days      int
 )
 
 var rootCmd = &cobra.Command{
@@ -34,6 +35,7 @@ extracts ARO_HCP_REPO_REVISION values from ./hcp/Revision.mk and outputs them as
 func init() {
 	rootCmd.Flags().BoolVarP(&quickMode, "quick", "q", false, "Skip git fetch/reset operations and use repository as-is")
 	rootCmd.Flags().StringVarP(&envList, "env", "e", "", "Comma-separated list of environments to analyze (int,stg,prod). If not specified, all environments are processed.")
+	rootCmd.Flags().IntVarP(&days, "days", "d", 0, "Number of days to look back in commit history for Revision.mk changes. If 0, only checks the tip commit.")
 }
 
 func main() {
@@ -126,26 +128,28 @@ func runCommand(cmd *cobra.Command, args []string) {
 			continue // Skip this environment if not selected
 		}
 
-		revision, commitDate, err := processBranch(branch, quickMode)
+		commits, err := processBranch(branch, quickMode, days)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing branch '%s': %v\n", branch, err)
 			continue
 		}
 
-		// Convert commit date to UTC
-		utcDate, err := convertToUTC(commitDate)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error converting date to UTC for branch '%s': %v\n", branch, err)
-			continue
+		// Convert all commit dates to UTC and add to result
+		var commitInfos []CommitInfo
+		for _, commit := range commits {
+			utcDate, err := convertToUTC(commit.CommitDate)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error converting date to UTC for branch '%s', commit '%s': %v\n", branch, commit.RepoRevision, err)
+				continue
+			}
+
+			commitInfos = append(commitInfos, CommitInfo{
+				RepoRevision: commit.RepoRevision,
+				CommitDate:   utcDate,
+			})
 		}
 
-		// Add commit info to the result map
-		result[envName] = []CommitInfo{
-			{
-				RepoRevision: revision,
-				CommitDate:   utcDate,
-			},
-		}
+		result[envName] = commitInfos
 	}
 
 	// Output JSON
@@ -158,48 +162,85 @@ func runCommand(cmd *cobra.Command, args []string) {
 	fmt.Println(string(jsonData))
 }
 
-func processBranch(branch string, quick bool) (string, string, error) {
+func processBranch(branch string, quick bool, daysBack int) ([]CommitInfo, error) {
 	if !quick {
 		// First fetch to ensure we have latest remote refs
 		fetchCmd := exec.Command("git", "fetch", "origin")
 		if err := fetchCmd.Run(); err != nil {
-			return "", "", fmt.Errorf("failed to fetch from origin: %v", err)
+			return nil, fmt.Errorf("failed to fetch from origin: %v", err)
 		}
 
 		// Checkout the branch
 		checkoutCmd := exec.Command("git", "checkout", branch)
 		if err := checkoutCmd.Run(); err != nil {
-			return "", "", fmt.Errorf("failed to checkout branch '%s': %v", branch, err)
+			return nil, fmt.Errorf("failed to checkout branch '%s': %v", branch, err)
 		}
 
 		// Reset to match the remote branch exactly
 		resetCmd := exec.Command("git", "reset", "--hard", fmt.Sprintf("origin/%s", branch))
 		if err := resetCmd.Run(); err != nil {
-			return "", "", fmt.Errorf("failed to reset to origin/%s: %v", branch, err)
+			return nil, fmt.Errorf("failed to reset to origin/%s: %v", branch, err)
 		}
 	} else {
 		// In quick mode, just checkout the branch without fetching/resetting
 		checkoutCmd := exec.Command("git", "checkout", branch)
 		if err := checkoutCmd.Run(); err != nil {
-			return "", "", fmt.Errorf("failed to checkout branch '%s': %v", branch, err)
+			return nil, fmt.Errorf("failed to checkout branch '%s': %v", branch, err)
 		}
 	}
 
-	// Extract ARO_HCP_REPO_REVISION from ./hcp/Revision.mk
-	revision, err := extractRevision("./hcp/Revision.mk")
+	var commits []CommitInfo
+
+	// Always get the tip commit first
+	tipRevision, err := extractRevision("./hcp/Revision.mk")
 	if err != nil {
-		return "", "", fmt.Errorf("failed to extract revision from Revision.mk on branch '%s': %v", branch, err)
+		return nil, fmt.Errorf("failed to extract revision from Revision.mk on branch '%s': %v", branch, err)
 	}
 
-	// Get the commit date of the current HEAD
-	commitDateCmd := exec.Command("git", "log", "-1", "--format=%ci")
+	// Get the commit date of the last change to Revision.mk
+	commitDateCmd := exec.Command("git", "log", "-1", "--format=%ci", "--", "./hcp/Revision.mk")
 	commitDateOutput, err := commitDateCmd.Output()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get commit date for branch '%s': %v", branch, err)
+		return nil, fmt.Errorf("failed to get commit date for Revision.mk on branch '%s': %v", branch, err)
 	}
-	commitDate := strings.TrimSpace(string(commitDateOutput))
+	tipCommitDate := strings.TrimSpace(string(commitDateOutput))
 
-	return revision, commitDate, nil
+	// Add tip commit as first entry
+	commits = append(commits, CommitInfo{
+		RepoRevision: tipRevision,
+		CommitDate:   tipCommitDate,
+	})
+
+	// If days is specified, get historical commits
+	if daysBack > 0 {
+		historicalCommits, err := getHistoricalCommits("./hcp/Revision.mk", daysBack)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get historical commits for Revision.mk on branch '%s': %v", branch, err)
+		}
+
+		// Add historical commits (excluding tip if it's already included)
+		tipCommitHash, err := getLastCommitHashForFile("./hcp/Revision.mk")
+		if err == nil {
+			for _, commit := range historicalCommits {
+				if commit.CommitHash != tipCommitHash {
+					commits = append(commits, CommitInfo{
+						RepoRevision: commit.RepoRevision,
+						CommitDate:   commit.CommitDate,
+					})
+				}
+			}
+		} else {
+			// If we can't get tip hash, just add all historical commits
+			for _, commit := range historicalCommits {
+				commits = append(commits, CommitInfo{
+					RepoRevision: commit.RepoRevision,
+					CommitDate:   commit.CommitDate,
+				})
+			}
+		}
+	}
+
+	return commits, nil
 }
 
 func extractRevision(filePath string) (string, error) {
@@ -223,6 +264,22 @@ func extractRevision(filePath string) (string, error) {
 	return revision, nil
 }
 
+func extractRevisionFromContent(content string) (string, error) {
+	// Look for ARO_HCP_REPO_REVISION= pattern
+	re := regexp.MustCompile(`ARO_HCP_REPO_REVISION\s*=\s*(.+)`)
+	matches := re.FindStringSubmatch(content)
+
+	if len(matches) < 2 {
+		return "", fmt.Errorf("ARO_HCP_REPO_REVISION not found in content")
+	}
+
+	// Clean up the value (remove quotes if present and trim whitespace)
+	revision := strings.TrimSpace(matches[1])
+	revision = strings.Trim(revision, "\"'")
+
+	return revision, nil
+}
+
 func convertToUTC(dateStr string) (string, error) {
 	// Parse the git commit date (format: "2006-01-02 15:04:05 -0700")
 	parsedTime, err := time.Parse("2006-01-02 15:04:05 -0700", dateStr)
@@ -233,4 +290,77 @@ func convertToUTC(dateStr string) (string, error) {
 	// Convert to UTC and format
 	utcTime := parsedTime.UTC()
 	return utcTime.Format("2006-01-02 15:04:05 +0000"), nil
+}
+
+type HistoricalCommit struct {
+	CommitHash   string
+	CommitDate   string
+	RepoRevision string
+}
+
+func getCurrentCommitHash() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func getLastCommitHashForFile(filePath string) (string, error) {
+	cmd := exec.Command("git", "log", "-1", "--format=%H", "--", filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func getHistoricalCommits(filePath string, daysBack int) ([]HistoricalCommit, error) {
+	// Get commits that modified the file in the last N days
+	sinceDate := time.Now().AddDate(0, 0, -daysBack).Format("2006-01-02")
+
+	cmd := exec.Command("git", "log", "--since="+sinceDate, "--format=%H|%ci", "--", filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get git log: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var commits []HistoricalCommit
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 2 {
+			continue
+		}
+
+		commitHash := parts[0]
+		commitDate := parts[1]
+
+		// Get the file content at this specific commit
+		showCmd := exec.Command("git", "show", commitHash+":"+filePath)
+		fileContent, err := showCmd.Output()
+		if err != nil {
+			continue // Skip this commit if we can't get the file content
+		}
+
+		// Extract revision from the file content at this commit
+		revision, err := extractRevisionFromContent(string(fileContent))
+		if err != nil {
+			continue // Skip this commit if we can't extract revision
+		}
+
+		commits = append(commits, HistoricalCommit{
+			CommitHash:   commitHash,
+			CommitDate:   commitDate,
+			RepoRevision: revision,
+		})
+	}
+
+	return commits, nil
 }

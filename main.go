@@ -13,8 +13,8 @@ import (
 )
 
 type CommitInfo struct {
-	Digest     string `json:"digest"`
-	CommitDate string `json:"commit_date"`
+	RepoRevision string `json:"repo_revision"`
+	CommitDate   string `json:"commit_date"`
 }
 
 type RepoRevisions struct {
@@ -96,8 +96,8 @@ func runCommand(cmd *cobra.Command, args []string) {
 		// Add commit info to the array (currently just one commit per environment)
 		*arrayPtr = []CommitInfo{
 			{
-				Digest:     revision,
-				CommitDate: utcDate,
+				RepoRevision: revision,
+				CommitDate:   utcDate,
 			},
 		}
 	}

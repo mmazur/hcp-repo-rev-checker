@@ -11,6 +11,11 @@ Extracts `ARO_HCP_REPO_REVISION` values and commit dates from pipelines reposito
 ### Options
 
 - `--quick, -q`: Skip git fetch/reset operations and use repository as-is. This is faster but uses the current state of the repository without pulling latest changes from remote.
+- `--env, -e`: Comma-separated list of environments to analyze (int,stg,prod). If not specified, all environments are processed.
+  - Examples:
+    - `-e int` - Only analyze the integration environment
+    - `-e int,stg` - Analyze integration and staging environments
+    - `-e prod` - Only analyze the production environment
 
 ## Example Output
 

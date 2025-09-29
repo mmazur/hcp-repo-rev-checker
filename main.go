@@ -17,14 +17,9 @@ type CommitInfo struct {
 	CommitDate   string `json:"commit_date"`
 }
 
-type RepoRevisions struct {
-	Int  []CommitInfo `json:"int"`
-	Stg  []CommitInfo `json:"stg"`
-	Prod []CommitInfo `json:"prod"`
-}
-
 var (
 	quickMode bool
+	envList   string
 )
 
 var rootCmd = &cobra.Command{
@@ -38,6 +33,7 @@ extracts ARO_HCP_REPO_REVISION values from ./hcp/Revision.mk and outputs them as
 
 func init() {
 	rootCmd.Flags().BoolVarP(&quickMode, "quick", "q", false, "Skip git fetch/reset operations and use repository as-is")
+	rootCmd.Flags().StringVarP(&envList, "env", "e", "", "Comma-separated list of environments to analyze (int,stg,prod). If not specified, all environments are processed.")
 }
 
 func main() {
@@ -47,8 +43,48 @@ func main() {
 	}
 }
 
+func parseEnvironments(envStr string) ([]string, error) {
+	if envStr == "" {
+		// Default to all environments
+		return []string{"int", "stg", "prod"}, nil
+	}
+
+	// Split by comma and trim spaces
+	envs := strings.Split(envStr, ",")
+	var validEnvs []string
+	validEnvNames := map[string]bool{
+		"int":  true,
+		"stg":  true,
+		"prod": true,
+	}
+
+	for _, env := range envs {
+		env = strings.TrimSpace(env)
+		if env == "" {
+			continue
+		}
+		if !validEnvNames[env] {
+			return nil, fmt.Errorf("invalid environment '%s'. Valid environments are: int, stg, prod", env)
+		}
+		validEnvs = append(validEnvs, env)
+	}
+
+	if len(validEnvs) == 0 {
+		return nil, fmt.Errorf("no valid environments specified")
+	}
+
+	return validEnvs, nil
+}
+
 func runCommand(cmd *cobra.Command, args []string) {
 	directory := args[0]
+
+	// Parse and validate environments
+	selectedEnvs, err := parseEnvironments(envList)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Check if directory exists
 	if _, err := os.Stat(directory); os.IsNotExist(err) {
@@ -69,17 +105,27 @@ func runCommand(cmd *cobra.Command, args []string) {
 	}
 	defer os.Chdir(originalDir)
 
-	// Initialize result structure
-	var result RepoRevisions
+	// Initialize result map
+	result := make(map[string][]CommitInfo)
 
-	// Process each branch
-	branches := map[string]*[]CommitInfo{
-		"main":                      &result.Int,
-		"release/hcp/public/stg":    &result.Stg,
-		"release/hcp/public/prod":   &result.Prod,
+	// Map of all possible branches
+	allBranches := map[string]string{
+		"main":                      "int",
+		"release/hcp/public/stg":    "stg",
+		"release/hcp/public/prod":   "prod",
 	}
 
-	for branch, arrayPtr := range branches {
+	// Filter branches based on selected environments
+	selectedEnvsMap := make(map[string]bool)
+	for _, env := range selectedEnvs {
+		selectedEnvsMap[env] = true
+	}
+
+	for branch, envName := range allBranches {
+		if !selectedEnvsMap[envName] {
+			continue // Skip this environment if not selected
+		}
+
 		revision, commitDate, err := processBranch(branch, quickMode)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing branch '%s': %v\n", branch, err)
@@ -93,8 +139,8 @@ func runCommand(cmd *cobra.Command, args []string) {
 			continue
 		}
 
-		// Add commit info to the array (currently just one commit per environment)
-		*arrayPtr = []CommitInfo{
+		// Add commit info to the result map
+		result[envName] = []CommitInfo{
 			{
 				RepoRevision: revision,
 				CommitDate:   utcDate,

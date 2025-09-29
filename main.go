@@ -7,23 +7,20 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
+type CommitInfo struct {
+	Digest     string `json:"digest"`
+	CommitDate string `json:"commit_date"`
+}
+
 type RepoRevisions struct {
-	Int struct {
-		RepoTip           string `json:"repo_tip"`
-		RepoTipCommitDate string `json:"repo_tip_commit_date"`
-	} `json:"int"`
-	Stg struct {
-		RepoTip           string `json:"repo_tip"`
-		RepoTipCommitDate string `json:"repo_tip_commit_date"`
-	} `json:"stg"`
-	Prod struct {
-		RepoTip           string `json:"repo_tip"`
-		RepoTipCommitDate string `json:"repo_tip_commit_date"`
-	} `json:"prod"`
+	Int  []CommitInfo `json:"int"`
+	Stg  []CommitInfo `json:"stg"`
+	Prod []CommitInfo `json:"prod"`
 }
 
 var rootCmd = &cobra.Command{
@@ -68,23 +65,33 @@ func runCommand(cmd *cobra.Command, args []string) {
 	var result RepoRevisions
 
 	// Process each branch
-	branches := map[string]struct {
-		repoTip    *string
-		commitDate *string
-	}{
-		"main":                      {&result.Int.RepoTip, &result.Int.RepoTipCommitDate},
-		"release/hcp/public/stg":    {&result.Stg.RepoTip, &result.Stg.RepoTipCommitDate},
-		"release/hcp/public/prod":   {&result.Prod.RepoTip, &result.Prod.RepoTipCommitDate},
+	branches := map[string]*[]CommitInfo{
+		"main":                      &result.Int,
+		"release/hcp/public/stg":    &result.Stg,
+		"release/hcp/public/prod":   &result.Prod,
 	}
 
-	for branch, ptrs := range branches {
+	for branch, arrayPtr := range branches {
 		revision, commitDate, err := processBranch(branch)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing branch '%s': %v\n", branch, err)
 			continue
 		}
-		*ptrs.repoTip = revision
-		*ptrs.commitDate = commitDate
+
+		// Convert commit date to UTC
+		utcDate, err := convertToUTC(commitDate)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error converting date to UTC for branch '%s': %v\n", branch, err)
+			continue
+		}
+
+		// Add commit info to the array (currently just one commit per environment)
+		*arrayPtr = []CommitInfo{
+			{
+				Digest:     revision,
+				CommitDate: utcDate,
+			},
+		}
 	}
 
 	// Output JSON
@@ -152,4 +159,16 @@ func extractRevision(filePath string) (string, error) {
 	revision = strings.Trim(revision, "\"'")
 
 	return revision, nil
+}
+
+func convertToUTC(dateStr string) (string, error) {
+	// Parse the git commit date (format: "2006-01-02 15:04:05 -0700")
+	parsedTime, err := time.Parse("2006-01-02 15:04:05 -0700", dateStr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse date '%s': %v", dateStr, err)
+	}
+
+	// Convert to UTC and format
+	utcTime := parsedTime.UTC()
+	return utcTime.Format("2006-01-02 15:04:05 +0000"), nil
 }

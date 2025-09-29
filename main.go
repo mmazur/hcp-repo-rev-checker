@@ -23,6 +23,10 @@ type RepoRevisions struct {
 	Prod []CommitInfo `json:"prod"`
 }
 
+var (
+	quickMode bool
+)
+
 var rootCmd = &cobra.Command{
 	Use:   "repo-rev-checker [directory]",
 	Short: "Check repository revisions across different branches",
@@ -30,6 +34,10 @@ var rootCmd = &cobra.Command{
 extracts ARO_HCP_REPO_REVISION values from ./hcp/Revision.mk and outputs them as JSON.`,
 	Args: cobra.ExactArgs(1),
 	Run:  runCommand,
+}
+
+func init() {
+	rootCmd.Flags().BoolVarP(&quickMode, "quick", "q", false, "Skip git fetch/reset operations and use repository as-is")
 }
 
 func main() {
@@ -72,7 +80,7 @@ func runCommand(cmd *cobra.Command, args []string) {
 	}
 
 	for branch, arrayPtr := range branches {
-		revision, commitDate, err := processBranch(branch)
+		revision, commitDate, err := processBranch(branch, quickMode)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing branch '%s': %v\n", branch, err)
 			continue
@@ -104,23 +112,31 @@ func runCommand(cmd *cobra.Command, args []string) {
 	fmt.Println(string(jsonData))
 }
 
-func processBranch(branch string) (string, string, error) {
-	// First fetch to ensure we have latest remote refs
-	fetchCmd := exec.Command("git", "fetch", "origin")
-	if err := fetchCmd.Run(); err != nil {
-		return "", "", fmt.Errorf("failed to fetch from origin: %v", err)
-	}
+func processBranch(branch string, quick bool) (string, string, error) {
+	if !quick {
+		// First fetch to ensure we have latest remote refs
+		fetchCmd := exec.Command("git", "fetch", "origin")
+		if err := fetchCmd.Run(); err != nil {
+			return "", "", fmt.Errorf("failed to fetch from origin: %v", err)
+		}
 
-	// Checkout the branch
-	checkoutCmd := exec.Command("git", "checkout", branch)
-	if err := checkoutCmd.Run(); err != nil {
-		return "", "", fmt.Errorf("failed to checkout branch '%s': %v", branch, err)
-	}
+		// Checkout the branch
+		checkoutCmd := exec.Command("git", "checkout", branch)
+		if err := checkoutCmd.Run(); err != nil {
+			return "", "", fmt.Errorf("failed to checkout branch '%s': %v", branch, err)
+		}
 
-	// Reset to match the remote branch exactly
-	resetCmd := exec.Command("git", "reset", "--hard", fmt.Sprintf("origin/%s", branch))
-	if err := resetCmd.Run(); err != nil {
-		return "", "", fmt.Errorf("failed to reset to origin/%s: %v", branch, err)
+		// Reset to match the remote branch exactly
+		resetCmd := exec.Command("git", "reset", "--hard", fmt.Sprintf("origin/%s", branch))
+		if err := resetCmd.Run(); err != nil {
+			return "", "", fmt.Errorf("failed to reset to origin/%s: %v", branch, err)
+		}
+	} else {
+		// In quick mode, just checkout the branch without fetching/resetting
+		checkoutCmd := exec.Command("git", "checkout", branch)
+		if err := checkoutCmd.Run(); err != nil {
+			return "", "", fmt.Errorf("failed to checkout branch '%s': %v", branch, err)
+		}
 	}
 
 	// Extract ARO_HCP_REPO_REVISION from ./hcp/Revision.mk

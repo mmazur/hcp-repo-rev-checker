@@ -8,6 +8,10 @@ Extracts `ARO_HCP_REPO_REVISION` values and commit dates from pipelines reposito
 ./repo-rev-checker.exe <repo_directory>
 ```
 
+### Options
+
+- `--quick, -q`: Skip git fetch/reset operations and use repository as-is. This is faster but uses the current state of the repository without pulling latest changes from remote.
+
 ## Example Output
 
 JSON with arrays for main, staging, and production branches. Each array contains objects with digest and commit_date fields (dates in UTC):
